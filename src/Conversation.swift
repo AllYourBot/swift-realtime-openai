@@ -31,6 +31,9 @@ public final class Conversation: Sendable {
 	/// A list of items in the conversation.
 	@MainActor public private(set) var entries: [Item] = []
 
+	/// Dictionary to store user transcripts by item ID for reliable access
+	@MainActor private var userTranscripts: [String: String] = [:]
+
 	/// Whether the conversation is currently connected to the server.
 	@MainActor public private(set) var connected: Bool = false
 
@@ -51,7 +54,21 @@ public final class Conversation: Sendable {
 	/// Note that this doesn't include function call events. To get a complete list, use `entries`.
 	@MainActor public var messages: [Item.Message] {
 		entries.compactMap { switch $0 {
-			case let .message(message): return message
+			case let .message(message):
+				// Create a copy of the message with any stored transcript if available
+				var messageCopy = message
+				if let transcript = userTranscripts[message.id],
+				   message.role == .user,
+				   let index = message.content.firstIndex(where: {
+					   if case .input_audio = $0 { return true }
+					   return false
+				   }) {
+					// Update the transcript in the copy
+					if case let .input_audio(audio) = message.content[index] {
+						messageCopy.content[index] = .input_audio(.init(audio: audio.audio, transcript: transcript))
+					}
+				}
+				return messageCopy
 			default: return nil
 		} }
 	}
@@ -302,6 +319,10 @@ private extension Conversation {
 			case let .conversationItemDeleted(event):
 				entries.removeAll { $0.id == event.itemId }
 			case let .conversationItemInputAudioTranscriptionCompleted(event):
+				// Store the transcript in userTranscripts dictionary for reliable access
+				userTranscripts[event.itemId] = event.transcript
+
+				// Also update the entry in the entries array
 				updateEvent(id: event.itemId) { message in
 					guard case let .input_audio(audio) = message.content[event.contentIndex] else { return }
 
@@ -362,7 +383,7 @@ private extension Conversation {
             case let .responseOutputItemDone(event):
                 updateEvent(id: event.item.id) { message in
                     guard case let .message(newMessage) = event.item else { return }
-                    
+
                     message = newMessage
                 }
 			default:
